@@ -17,6 +17,20 @@ defmodule TimbreWeb.RecordingControllerTest do
     |> Map.fetch!("data")
   end
 
+  defp stub_verbose_json(segments) do
+    Req.Test.stub(Timbre.Transcription, fn conn ->
+      case conn.request_path do
+        "/v1/audio/transcriptions" ->
+          body = %{"text" => "Hello there. General Kenobi.", "segments" => segments}
+          Req.Test.json(conn, body)
+
+        _ ->
+          content = Jason.encode!(%{"title" => "Greeting", "summary" => "A greeting."})
+          Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => content}}]})
+      end
+    end)
+  end
+
   describe "POST /api/recordings" do
     test "stores the upload and returns metadata", %{conn: conn} do
       data = create!(conn, %{"duration_ms" => "2500", "sample_rate" => "48000"})
@@ -231,6 +245,80 @@ defmodule TimbreWeb.RecordingControllerTest do
 
       body = conn |> post(~p"/api/recordings/#{id}/transcribe") |> json_response(503)
       assert body["errors"]["detail"] =~ "OPENAI_API_KEY"
+    end
+  end
+
+  describe "transcribe with timings + GET /api/recordings/:id/transcript.srt" do
+    test "requests verbose_json from the provider", %{conn: conn} do
+      id = create!(conn)["id"]
+      test_pid = self()
+
+      Req.Test.stub(Timbre.Transcription, fn conn ->
+        if conn.request_path == "/v1/audio/transcriptions" do
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+          send(test_pid, {:transcription_body, body})
+          Req.Test.json(conn, %{"text" => "hi", "segments" => []})
+        else
+          content = Jason.encode!(%{"title" => "Hi", "summary" => "Hi."})
+          Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => content}}]})
+        end
+      end)
+
+      post(conn, ~p"/api/recordings/#{id}/transcribe")
+      assert_received {:transcription_body, body}
+      assert body =~ "verbose_json"
+    end
+
+    test "serves an .srt download built from the stored segments", %{conn: conn} do
+      id = create!(conn)["id"]
+
+      stub_verbose_json([
+        %{"start" => 0.0, "end" => 1.5, "text" => " Hello there."},
+        %{"start" => 1.5, "end" => 3.25, "text" => " General Kenobi."}
+      ])
+
+      data = conn |> post(~p"/api/recordings/#{id}/transcribe") |> json_response(200)
+      assert data["data"]["has_subtitles"] == true
+
+      conn = get(conn, ~p"/api/recordings/#{id}/transcript.srt")
+      body = response(conn, 200)
+
+      assert [type] = get_resp_header(conn, "content-type")
+      assert type =~ "application/x-subrip"
+      assert [disposition] = get_resp_header(conn, "content-disposition")
+      assert disposition =~ ~r/attachment; filename="[a-z0-9-]+\.srt"/
+
+      assert body ==
+               "1\n00:00:00,000 --> 00:00:01,500\nHello there.\n\n" <>
+                 "2\n00:00:01,500 --> 00:00:03,250\nGeneral Kenobi.\n"
+    end
+
+    test "404s with a hint when there is no timed transcript", %{conn: conn} do
+      id = create!(conn)["id"]
+      body = conn |> get(~p"/api/recordings/#{id}/transcript.srt") |> json_response(404)
+      assert body["errors"]["detail"] =~ "Transcribe"
+    end
+
+    test "a provider without segments still transcribes but has no subtitles", %{conn: conn} do
+      id = create!(conn)["id"]
+
+      Req.Test.stub(Timbre.Transcription, fn conn ->
+        if conn.request_path == "/v1/audio/transcriptions" do
+          Req.Test.json(conn, %{"text" => "plain text only"})
+        else
+          content = Jason.encode!(%{"title" => "Plain", "summary" => "Plain."})
+          Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => content}}]})
+        end
+      end)
+
+      data = conn |> post(~p"/api/recordings/#{id}/transcribe") |> json_response(200)
+      assert data["data"]["transcript"] == "plain text only"
+      assert data["data"]["has_subtitles"] == false
+      assert conn |> get(~p"/api/recordings/#{id}/transcript.srt") |> json_response(404)
+    end
+
+    test "404 for an unknown recording", %{conn: conn} do
+      assert conn |> get(~p"/api/recordings/999/transcript.srt") |> json_response(404)
     end
   end
 

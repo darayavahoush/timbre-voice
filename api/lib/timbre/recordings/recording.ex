@@ -21,6 +21,8 @@ defmodule Timbre.Recordings.Recording do
     field :effects, :map, default: %{}
     field :transcript, :string
     field :summary, :string
+    # timed transcript segments (see Timbre.Subtitles); stored as JSON text
+    field :segments, {:array, :map}
 
     belongs_to :parent, __MODULE__
 
@@ -43,7 +45,8 @@ defmodule Timbre.Recordings.Recording do
       :effects,
       :parent_id,
       :transcript,
-      :summary
+      :summary,
+      :segments
     ])
     |> update_change(:mime_type, &normalize_mime/1)
     |> update_change(:title, &trim/1)
@@ -59,7 +62,7 @@ defmodule Timbre.Recordings.Recording do
   @doc "Changeset for the fields a user may edit afterwards."
   def update_changeset(recording, attrs) do
     recording
-    |> cast(attrs, [:title, :transcript, :summary])
+    |> cast(attrs, [:title, :transcript, :summary, :segments])
     |> update_change(:title, &trim/1)
     |> validate_required([:title])
     |> validate_length(:title, min: 1, max: 120)

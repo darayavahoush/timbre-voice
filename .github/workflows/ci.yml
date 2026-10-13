@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch/PR makes the older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Phoenix API: format, warnings-as-errors compile, ExUnit (SQLite, no services needed).
+  api:
+    name: API (Elixir)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            api/deps
+            api/_build
+          key: mix-${{ runner.os }}-${{ hashFiles('api/mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  # The DSP crate's native unit tests (the same code the WASM build exposes).
+  rust:
+    name: DSP crate (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/crates/timbre_kit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web/crates/timbre_kit
+
+      - run: cargo test --locked
+
+  # React app: build the WASM package, typecheck, and make the production bundle.
+  web:
+    name: Web (React + WASM)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web/crates/timbre_kit
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+
+      # `timbre_kit` is a file: dependency on the wasm-pack output, so the
+      # package must exist before `npm ci`.
+      - run: npm run build:wasm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx vite build

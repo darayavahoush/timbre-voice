@@ -54,14 +54,18 @@ defmodule Timbre.Recordings do
     )
   end
 
-  @doc "Store a transcript/summary (and, if the title is still the default, a better title)."
-  def save_transcript(%Recording{} = recording, %{transcript: t, summary: s, title: title}) do
-    attrs = %{transcript: t, summary: s}
+  @doc "Store a transcript/summary/segments (and, if the title is still the default, a better title)."
+  def save_transcript(%Recording{} = recording, result) do
+    attrs = %{
+      transcript: result.transcript,
+      summary: result.summary,
+      segments: Map.get(result, :segments, [])
+    }
 
     attrs =
       if recording.title in ["Untitled recording", ""] or
            String.starts_with?(recording.title, "Recording "),
-         do: Map.put(attrs, :title, title),
+         do: Map.put(attrs, :title, result.title),
          else: attrs
 
     update_recording(recording, attrs)

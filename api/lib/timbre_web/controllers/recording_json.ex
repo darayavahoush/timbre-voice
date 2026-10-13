@@ -17,6 +17,7 @@ defmodule TimbreWeb.RecordingJSON do
       effects: r.effects,
       transcript: r.transcript,
       summary: r.summary,
+      has_subtitles: r.segments not in [nil, []],
       inserted_at: r.inserted_at,
       audio_url: "/api/recordings/#{r.id}/audio"
     }

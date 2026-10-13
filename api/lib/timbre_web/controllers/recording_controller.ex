@@ -88,6 +88,38 @@ defmodule TimbreWeb.RecordingController do
     end
   end
 
+  @doc "SubRip subtitles built from the stored Whisper segments, as a file download."
+  def srt(conn, %{"id" => id}) do
+    with {:ok, rec} <- fetch(id),
+         {:ok, srt} <- build_srt(rec) do
+      disposition = ~s(attachment; filename="#{srt_filename(rec)}")
+
+      conn
+      |> put_resp_content_type("application/x-subrip", "utf-8")
+      |> put_resp_header("content-disposition", disposition)
+      |> send_resp(200, srt)
+    end
+  end
+
+  defp build_srt(rec) do
+    case Timbre.Subtitles.to_srt(rec.segments) do
+      "" -> {:error, :not_found, "no timed transcript yet: run Transcribe first"}
+      srt -> {:ok, srt}
+    end
+  end
+
+  # Header-safe ASCII filename from the title.
+  defp srt_filename(%{id: id, title: title}) do
+    slug =
+      title
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "-")
+      |> String.trim("-")
+      |> String.slice(0, 60)
+
+    if slug == "", do: "recording-#{id}.srt", else: "#{slug}.srt"
+  end
+
   @doc "Transcribe + summarize (bonus). Needs OPENAI_API_KEY (any OpenAI-compatible API)."
   def transcribe(conn, %{"id" => id}) do
     with {:ok, recording} <- fetch(id),

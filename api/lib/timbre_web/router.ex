@@ -11,9 +11,11 @@ defmodule TimbreWeb.Router do
     get "/readyz", HealthController, :ready
   end
 
-  # Media endpoint: no `:accepts` — <audio> elements send arbitrary Accept headers.
+  # Media/download endpoints: no `:accepts` — <audio> elements and plain links
+  # send arbitrary Accept headers.
   scope "/api", TimbreWeb do
     get "/recordings/:id/audio", RecordingController, :audio
+    get "/recordings/:id/transcript.srt", RecordingController, :srt
   end
 
   scope "/api", TimbreWeb do

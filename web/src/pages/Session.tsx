@@ -1,15 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { Socket, type Channel } from 'phoenix'
-import { Button, Card, ErrorNote, Meter } from '../components/ui'
-import { getSession, type Session as SessionInfo } from '../lib/api'
+import { Button, ErrorNote, Icon, LinkButton, Stage } from '../components/ui'
+import { Player } from '../components/Player'
+import { getRecording, getSession, type Recording, type Session as SessionInfo } from '../lib/api'
 import { LivePlayer, startCapture, type MicCapture } from '../lib/capture'
-import { fmtDuration } from '../lib/format'
+import { fmtClock } from '../lib/format'
 import { kitReady } from '../lib/kit'
 import { clientId, getHostToken, savedName, saveName } from '../lib/session'
 
 type Participant = { id: string; name: string; host: boolean; live: boolean }
 type RoomState = { status: 'open' | 'recording' | 'finished'; recording_id: number | null; participants: Participant[] }
+
+const TILE_COLORS = ['#2a2ee6', '#ff5a3c', '#12133a', '#6a4cff', '#0f8f6e']
+const colorFor = (s: string) => TILE_COLORS[[...s].reduce((a, c) => a + c.charCodeAt(0), 0) % TILE_COLORS.length]
+
+function Masthead({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <Stage>
+      <Link to="/" className="inline-flex items-center gap-1.5 text-sm text-white/80 hover:text-white">
+        <Icon name="chevron" className="h-3.5 w-3.5" />
+        Library
+      </Link>
+      <h1 className="mt-6 max-w-3xl text-[clamp(2.5rem,6vw,4.5rem)] font-light leading-[1.02] tracking-[-0.02em]">{title}</h1>
+      {children}
+    </Stage>
+  )
+}
 
 export default function SessionPage() {
   const { id = '' } = useParams()
@@ -24,57 +41,86 @@ export default function SessionPage() {
 
   if (error && !info) {
     return (
-      <Card>
-        <p className="text-ink">That session doesn’t exist.</p>
-        <Link to="/" className="text-sm text-link">Back home</Link>
-      </Card>
+      <>
+        <Masthead title="Session not found" />
+        <div className="mx-auto max-w-6xl px-6 py-12">
+          <p className="text-ink">This link doesn’t match a session. Check it with whoever sent it, or start a new one.</p>
+          <LinkButton to="/" variant="ink" className="mt-5">
+            Go to your library
+          </LinkButton>
+        </div>
+      </>
     )
   }
-  if (!info) return <p className="text-sm text-mute">Loading…</p>
+  if (!info) {
+    return (
+      <>
+        <Masthead title="Joining…" />
+        <div className="mx-auto max-w-6xl px-6 py-12 text-mute">Loading session…</div>
+      </>
+    )
+  }
 
   if (!joined) {
+    const done = info.status === 'finished' && info.recording_id
     return (
-      <Card className="max-w-md">
-        <h1 className="text-lg font-semibold text-ink">{info.name}</h1>
-        {info.status === 'finished' && info.recording_id ? (
-          <FinishedPlayer recordingId={info.recording_id} />
-        ) : (
-          <>
-            <p className="mb-4 mt-1 text-sm text-mute">Join to share your microphone with everyone in this session. Use headphones to avoid feedback.</p>
-            <form
-              className="flex gap-3"
-              onSubmit={(e) => {
-                e.preventDefault()
-                saveName(name)
-                setJoined(true)
-              }}
-            >
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={32}
-                required
-                autoFocus
-                placeholder="Your name"
-                aria-label="Your name"
-                className="min-w-0 flex-1 rounded-md border border-hairline-strong bg-canvas px-3 py-1.5 text-sm text-ink"
-              />
-              <Button variant="primary" type="submit">Join</Button>
-            </form>
-          </>
-        )}
-      </Card>
+      <>
+        <Masthead title={info.name}>
+          <p className="mt-4 max-w-xl text-lg text-white/80">
+            {done ? 'This session has finished.' : 'Join to share your microphone with everyone in this session. Use headphones to avoid feedback.'}
+          </p>
+        </Masthead>
+        <div className="mx-auto max-w-6xl px-6 py-12">
+          <div className="max-w-md rounded-2xl border border-line bg-card p-6">
+            {done ? (
+              <FinishedPlayer recordingId={info.recording_id!} />
+            ) : (
+              <form
+                className="space-y-3"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  saveName(name)
+                  setJoined(true)
+                }}
+              >
+                <label className="block text-sm font-semibold text-ink" htmlFor="join-name">
+                  Your name
+                </label>
+                <input
+                  id="join-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  maxLength={32}
+                  required
+                  autoFocus
+                  placeholder="How should others see you?"
+                  className="w-full rounded-xl border border-line-strong bg-paper px-4 py-2.5 text-ink placeholder:text-mute"
+                />
+                <Button variant="primary" type="submit" className="w-full">
+                  Join the session
+                </Button>
+              </form>
+            )}
+          </div>
+        </div>
+      </>
     )
   }
   return <Room session={info} name={name.trim() || 'Guest'} />
 }
 
 function FinishedPlayer({ recordingId }: { recordingId: number }) {
+  const [rec, setRec] = useState<Recording | null>(null)
+  useEffect(() => {
+    getRecording(recordingId).then(setRec).catch(() => setRec(null))
+  }, [recordingId])
   return (
-    <div className="mt-3 space-y-3">
-      <p className="text-sm text-mute">This session has finished. Here’s the mixed recording:</p>
-      <audio controls src={`/api/recordings/${recordingId}/audio`} className="w-full" />
-      <Link to={`/studio/${recordingId}`} className="text-sm text-link">Open in Studio →</Link>
+    <div className="space-y-4">
+      <p className="text-sm text-body">Here’s the mixed recording.</p>
+      <Player src={`/api/recordings/${recordingId}/audio`} durationMs={rec?.duration_ms ?? 0} />
+      <LinkButton to={`/studio/${recordingId}`} variant="outline" size="sm">
+        Open in Studio
+      </LinkButton>
     </div>
   )
 }
@@ -206,73 +252,127 @@ function Room({ session, name }: { session: SessionInfo; name: string }) {
   const link = `${location.origin}/s/${session.id}`
   const [copied, setCopied] = useState(false)
   const isHost = me?.host ?? false
+  const live = state.status === 'recording'
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-ink">{session.name}</h1>
-        <p className="mt-1 flex items-center gap-2 text-sm text-mute">
-          <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-link' : 'bg-hairline-strong'}`} />
-          {connected ? 'Connected' : 'Connecting…'} ·{' '}
-          {state.status === 'open' && 'Waiting to start'}
-          {state.status === 'recording' && `Recording ${fmtDuration(elapsed)}`}
-          {state.status === 'finished' && 'Finished'}
-        </p>
-      </div>
+    <>
+      <Masthead title={session.name}>
+        <div className="mt-6 flex flex-wrap items-end gap-x-8 gap-y-3">
+          {live && (
+            <p className="font-display text-7xl font-light tabular-nums leading-none tracking-tight" aria-label="Elapsed time">
+              {fmtClock(elapsed)}
+            </p>
+          )}
+          <p className="flex items-center gap-2 text-white/80" aria-live="polite">
+            <span className={`h-2.5 w-2.5 rounded-full ${!connected ? 'bg-white/30' : live ? 'bg-coral' : 'bg-mint'}`} />
+            {!connected ? 'Connecting…' : state.status === 'open' ? 'Waiting for the host to start' : live ? 'Recording' : 'Finished'}
+          </p>
+        </div>
+      </Masthead>
 
-      <ErrorNote error={error} />
+      <div className="mx-auto max-w-6xl space-y-10 px-6 py-12">
+        <ErrorNote error={error} />
 
-      {state.status !== 'finished' && (
-        <Card>
-          <h2 className="mb-2 text-sm font-semibold text-ink">Invite people</h2>
-          <div className="flex gap-3">
-            <input readOnly value={link} aria-label="Share link" onFocus={(e) => e.currentTarget.select()} className="min-w-0 flex-1 rounded-md border border-hairline-strong bg-canvas-soft px-3 py-1.5 font-mono text-xs text-ink" />
-            <Button
-              onClick={() => navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) })}
-            >
-              {copied ? 'Copied' : 'Copy link'}
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      <Card>
-        <h2 className="mb-3 text-sm font-semibold text-ink">In the room</h2>
-        <ul className="space-y-3">
-          {state.participants.map((p) => (
-            <li key={p.id} className="flex items-center gap-3">
-              <span className="w-40 truncate text-sm text-ink">
-                {p.name}
-                {p.id === me?.id && <span className="text-mute"> (you)</span>}
-                {p.host && <span className="ml-1 rounded-full border border-hairline px-1.5 text-[10px] text-mute">host</span>}
-              </span>
-              <div className="flex-1">{p.live ? <Meter value={p.id === me?.id ? (muted ? 0 : myLevel) : (levels[p.id] ?? 0)} /> : <span className="text-xs text-mute">disconnected</span>}</div>
-            </li>
-          ))}
-        </ul>
         {state.status !== 'finished' && (
-          <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-hairline pt-4">
-            <Button onClick={() => setMuted((m) => !m)} aria-pressed={muted}>{muted ? 'Unmute' : 'Mute'}</Button>
-            <Button onClick={toggleListen} aria-pressed={listening}>{listening ? 'Stop listening live' : 'Listen live (headphones)'}</Button>
+          <section aria-labelledby="invite-h">
+            <h2 id="invite-h" className="text-2xl font-medium tracking-tight text-ink">
+              Invite people
+            </h2>
+            <div className="mt-3 flex max-w-xl gap-2">
+              <input
+                readOnly
+                value={link}
+                aria-label="Share link"
+                onFocus={(e) => e.currentTarget.select()}
+                className="min-w-0 flex-1 rounded-full border border-line-strong bg-card px-4 py-2.5 text-sm text-ink"
+              />
+              <Button
+                onClick={() =>
+                  navigator.clipboard.writeText(link).then(() => {
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 1500)
+                  })
+                }
+              >
+                <Icon name="copy" />
+                {copied ? 'Copied' : 'Copy link'}
+              </Button>
+            </div>
+          </section>
+        )}
+
+        <section aria-labelledby="room-h">
+          <h2 id="room-h" className="text-2xl font-medium tracking-tight text-ink">
+            In the room <span className="font-sans text-base font-normal text-mute">{state.participants.filter((p) => p.live).length} connected</span>
+          </h2>
+          <ul className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {state.participants.map((p) => {
+              const isMe = p.id === me?.id
+              const level = !p.live ? 0 : isMe ? (muted ? 0 : myLevel) : (levels[p.id] ?? 0)
+              const color = colorFor(p.name)
+              return (
+                <li key={p.id} className={`rounded-2xl border border-line bg-card p-5 ${p.live ? '' : 'opacity-50'}`}>
+                  <div className="relative mx-auto grid h-24 w-24 place-items-center">
+                    <span
+                      aria-hidden
+                      className="absolute inset-0 rounded-full transition-transform duration-100"
+                      style={{ background: color, opacity: 0.18 + level * 0.4, transform: `scale(${1 + level * 0.45})` }}
+                    />
+                    <span
+                      className="relative grid h-20 w-20 place-items-center rounded-full font-display text-3xl font-medium text-white"
+                      style={{ background: color }}
+                    >
+                      {(p.name.trim()[0] ?? '?').toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="mt-4 truncate text-center font-semibold text-ink">
+                    {p.name}
+                    {isMe && <span className="font-normal text-mute"> (you)</span>}
+                  </p>
+                  <p className="mt-1 text-center text-xs text-mute">
+                    {!p.live ? 'Disconnected' : p.host ? 'Host' : isMe && muted ? 'Muted' : 'Guest'}
+                  </p>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+
+        {state.status !== 'finished' && (
+          <section className="flex flex-wrap items-center gap-3 border-t border-line pt-8" aria-label="Session controls">
+            <Button onClick={() => setMuted((m) => !m)} aria-pressed={muted}>
+              {muted ? 'Unmute my mic' : 'Mute my mic'}
+            </Button>
+            <Button onClick={toggleListen} aria-pressed={listening}>
+              {listening ? 'Stop listening live' : 'Listen live (use headphones)'}
+            </Button>
             <span className="grow" />
             {isHost && state.status === 'open' && (
-              <Button variant="primary" onClick={() => hostAction('start')} disabled={busy || !connected}>● Start recording</Button>
+              <Button variant="primary" onClick={() => hostAction('start')} disabled={busy || !connected}>
+                <Icon name="mic" />
+                Start recording
+              </Button>
             )}
             {isHost && state.status === 'recording' && (
-              <Button variant="danger" onClick={() => hostAction('stop')} disabled={busy}>{busy ? 'Mixing…' : '■ Stop & save mix'}</Button>
+              <Button variant="primary" onClick={() => hostAction('stop')} disabled={busy}>
+                <Icon name="stop" />
+                {busy ? 'Mixing…' : 'Stop and save the mix'}
+              </Button>
             )}
-            {!isHost && <span className="text-xs text-mute">Only the host can start and stop.</span>}
-          </div>
+            {!isHost && <span className="text-sm text-mute">Only the host can start and stop.</span>}
+          </section>
         )}
-      </Card>
 
-      {state.status === 'finished' && state.recording_id && (
-        <Card>
-          <h2 className="text-sm font-semibold text-ink">Mixed recording</h2>
-          <FinishedPlayer recordingId={state.recording_id} />
-          <Link to="/" className="mt-3 inline-block text-sm text-link">Go to library</Link>
-        </Card>
-      )}
-    </div>
+        {state.status === 'finished' && state.recording_id && (
+          <section className="max-w-xl rounded-2xl border border-line bg-card p-6">
+            <h2 className="mb-3 text-2xl font-medium tracking-tight text-ink">Mixed recording</h2>
+            <FinishedPlayer recordingId={state.recording_id} />
+            <LinkButton to="/" variant="ghost" size="sm" className="mt-3">
+              Back to your library
+            </LinkButton>
+          </section>
+        )}
+      </div>
+    </>
   )
 }

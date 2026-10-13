@@ -25,21 +25,34 @@ defmodule Timbre.Transcription do
   # Keeps the prompt bounded for very long takes (~6k tokens).
   @max_prompt_chars 24_000
 
+  @type result :: %{
+          transcript: String.t(),
+          title: String.t(),
+          summary: String.t(),
+          segments: [Timbre.Subtitles.segment()]
+        }
+
   @spec run(Recording.t()) ::
-          {:ok, %{transcript: String.t(), title: String.t(), summary: String.t()}}
+          {:ok, result()}
           | {:error, :not_configured | :upstream | :not_found, String.t()}
           | {:error, :not_found}
   def run(%Recording{} = recording) do
     with {:ok, cfg} <- config(),
          {:ok, audio} <- load_audio(recording),
-         {:ok, transcript} <- transcribe(cfg, recording, audio) do
+         {:ok, transcript, segments} <- transcribe(cfg, recording, audio) do
       case String.trim(transcript) do
         "" ->
-          {:ok, %{transcript: "", title: "Silent recording", summary: "No speech detected."}}
+          {:ok,
+           %{
+             transcript: "",
+             title: "Silent recording",
+             summary: "No speech detected.",
+             segments: []
+           }}
 
         text ->
           with {:ok, %{title: title, summary: summary}} <- summarize(cfg, text) do
-            {:ok, %{transcript: text, title: title, summary: summary}}
+            {:ok, %{transcript: text, title: title, summary: summary, segments: segments}}
           end
       end
     end
@@ -76,13 +89,16 @@ defmodule Timbre.Transcription do
         form_multipart: [
           file: {audio, filename: filename(recording), content_type: recording.mime_type},
           model: cfg[:transcription_model],
-          response_format: "json"
+          # verbose_json adds per-segment timings (used for SRT export); the
+          # `text` field is still there, so other consumers are unaffected.
+          response_format: "verbose_json"
         ]
       ] ++ cfg[:req_options]
 
     case Req.request(request) do
-      {:ok, %Req.Response{status: 200, body: %{"text" => text}}} when is_binary(text) ->
-        {:ok, text}
+      {:ok, %Req.Response{status: 200, body: %{"text" => text} = body}} when is_binary(text) ->
+        # Providers that ignore verbose_json just return no segments -> no SRT.
+        {:ok, text, Timbre.Subtitles.from_verbose_json(body["segments"])}
 
       {:ok, %Req.Response{status: status, body: body}} ->
         {:error, :upstream, "transcription failed (HTTP #{status}): #{error_message(body)}"}

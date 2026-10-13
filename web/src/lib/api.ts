@@ -10,6 +10,7 @@ export type Recording = {
   effects: Record<string, unknown>
   transcript: string | null
   summary: string | null
+  has_subtitles: boolean
   inserted_at: string
   audio_url: string
 }
@@ -83,6 +84,9 @@ export const renameRecording = (id: number, title: string) =>
 
 export const deleteRecording = (id: number) =>
   request<void>(`/api/recordings/${id}`, { method: 'DELETE' })
+
+/** Direct download URL for the SubRip (.srt) file; 404s until the take is transcribed. */
+export const subtitlesUrl = (id: number) => `/api/recordings/${id}/transcript.srt`
 
 export const transcribeRecording = (id: number) =>
   request<Recording>(`/api/recordings/${id}/transcribe`, { method: 'POST' })

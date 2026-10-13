@@ -13,6 +13,10 @@ defmodule TimbreWeb.FallbackController do
     conn |> put_status(:not_found) |> json(TimbreWeb.ErrorJSON.render("404.json", %{}))
   end
 
+  def call(conn, {:error, :not_found, detail}) do
+    conn |> put_status(:not_found) |> json(%{errors: %{detail: detail}})
+  end
+
   def call(conn, {:error, :bad_request, detail}) do
     conn |> put_status(:bad_request) |> json(%{errors: %{detail: detail}})
   end

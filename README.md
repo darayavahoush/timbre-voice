@@ -11,7 +11,7 @@ compiled to WebAssembly for the DSP.
 | 1 · Record & save | Mic → `MediaRecorder` → multipart upload → SQLite BLOB. Library with playback (HTTP Range, so seeking works everywhere), rename, delete. |
 | 2 · Voice processing | `timbre_kit` (Rust → WASM) runs **9 effects** in a Web Worker: trim silence, high-/low-pass, noise gate, pitch shift, **voice anonymizer** (pitch + formant shift), echo, gain, normalize (+ mono mixdown, WAV encode). Before/after waveforms and playback; save the result as a new take linked to its original. |
 | 3 · Multiplayer + merge | Create a session, share `/s/<id>`, everyone joins from their own browser. Mic audio streams over a Phoenix Channel; the host starts/stops a take and the server mixes all tracks into one WAV that is saved to the library. Optional live listening (headphones). |
-| Bonus · Transcribe | One click → transcript + AI title + summary via any OpenAI-compatible API (needs `OPENAI_API_KEY`). |
+| Bonus · Transcribe | One click → transcript + AI title + summary via any OpenAI-compatible API (needs `OPENAI_API_KEY`). Whisper runs as `verbose_json`, so segments keep their timings and any transcribed take downloads as a **`.srt`** subtitle file. |
 
 Deployed at: _add your URL here_
 
@@ -71,6 +71,10 @@ host "stop" ──────────────────────�
   isn't saved.
 - **`Timbre.Transcription`** — `Req` against `/audio/transcriptions` and
   `/chat/completions`; base URL and models are configurable (Groq etc. work).
+  Requests `verbose_json`; `Timbre.Subtitles` normalizes the timed segments (stored
+  as JSON on the recording) and renders SubRip, served from
+  `GET /api/recordings/:id/transcript.srt`. Takes transcribed before this change
+  have no timings until you hit Re-transcribe.
   Tests use `Req.Test` stubs, never the network.
 
 ### WASM (`web/crates/timbre_kit`)
@@ -106,6 +110,10 @@ resampler, so chunk seams are inaudible) and the live-listen jitter buffer.
   304, validation, transcription stubs), mixer, WAV writer, room lifecycle
   (offsets, reconnect, caps, auto-save), and channel tests (host-only controls,
   relay to listeners only, no echo to sender, finished-session join).
+
+CI (`.github/workflows/ci.yml`) runs the same checks on every push and PR: API format +
+warnings-as-errors + `mix test`, `cargo test` for the DSP crate, and the web WASM build,
+typecheck and production bundle.
 
 ## Deploy (Fly.io, single origin)
 

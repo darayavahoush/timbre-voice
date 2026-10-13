@@ -5,12 +5,24 @@ import Home from './pages/Home'
 import Studio from './pages/Studio'
 import SessionPage from './pages/Session'
 
-function Dot({ ok, label }: { ok: boolean; label: string }) {
+function Status({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-mute">
-      <span className={`h-1.5 w-1.5 rounded-full ${ok ? 'bg-link' : 'bg-hairline-strong'}`} />
+    <span className="inline-flex items-center gap-1.5 text-xs text-white/75" title={`${detail}: ${ok ? 'ready' : 'not ready'}`}>
+      <span className={`h-2 w-2 rounded-full ${ok ? 'bg-mint' : 'bg-white/30'}`} />
       {label}
     </span>
+  )
+}
+
+function Wordmark() {
+  return (
+    <Link to="/" className="inline-flex items-center gap-2.5 text-white">
+      <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden>
+        <circle cx="16" cy="16" r="6" fill="#ff5a3c" />
+        <circle cx="16" cy="16" r="12" fill="none" stroke="white" strokeWidth="1.8" strokeDasharray="1.6 3.2" strokeLinecap="round" />
+      </svg>
+      <span className="font-display text-2xl font-medium italic tracking-tight">timbre</span>
+    </Link>
   )
 }
 
@@ -25,22 +37,32 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-canvas">
-        <header className="sticky top-0 z-10 border-b border-hairline bg-canvas/80 backdrop-blur">
-          <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-3">
-            <Link to="/" className="font-semibold tracking-tight text-ink">timbre</Link>
+      <div className="min-h-screen bg-paper">
+        <header className="on-stage bg-stage-deep">
+          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+            <Wordmark />
             <div className="flex items-center gap-4">
-              <Dot ok={wasmOk} label="WASM" />
-              <Dot ok={apiOk} label="API" />
+              <Status ok={wasmOk} label="WASM" detail="Audio engine" />
+              <Status ok={apiOk} label="API" detail="Server" />
             </div>
           </div>
         </header>
-        <main className="mx-auto max-w-3xl px-6 py-8">
+        <main>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/studio/:id" element={<Studio />} />
             <Route path="/s/:id" element={<SessionPage />} />
-            <Route path="*" element={<p className="text-mute">Page not found.</p>} />
+            <Route
+              path="*"
+              element={
+                <div className="mx-auto max-w-6xl px-6 py-24">
+                  <h1 className="text-4xl text-ink">Page not found</h1>
+                  <Link to="/" className="mt-4 inline-block text-link underline">
+                    Go to your library
+                  </Link>
+                </div>
+              }
+            />
           </Routes>
         </main>
       </div>
