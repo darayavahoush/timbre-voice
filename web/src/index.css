@@ -1,22 +1,21 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 
-/* Palette: a deep indigo masthead, lilac-white paper, one coral accent.
-   The header and every page's stage share ONE continuous surface (see
-   .stage-surface), so the blue reads as a single calm area instead of
-   separate patches. The dark block flips the paper/ink tokens and darkens
-   the stage too, so it never glares against the dark page. */
+/* Palette: ONE indigo (the stage, header and links are all the same hue),
+   near-neutral cool greys for everything else, one coral accent. The header
+   and the stage share one flat colour with no gradient, so there are no seams
+   or patches. Dark mode flips the paper/ink tokens. */
 @theme {
-  --color-stage: #2d3196;
-  --color-stage-deep: #1d2070;
-  --color-paper: #f4f3ff;
+  --color-stage: #1e2150;
+  --color-stage-deep: #1e2150;
+  --color-paper: #f6f6f9;
   --color-card: #ffffff;
-  --color-ink: #12133a;
-  --color-body: #4a4c78;
-  --color-mute: #6b6d9b;
-  --color-line: #dedcf3;
-  --color-line-strong: #b9b8e0;
-  --color-link: #3438a8;
+  --color-ink: #14162b;
+  --color-body: #4b4e63;
+  --color-mute: #6c6f85;
+  --color-line: #e3e4ec;
+  --color-line-strong: #c6c8d6;
+  --color-link: #343a9c;
   --color-coral: #ff5a3c;
   --color-coral-deep: #d13a17;
   --color-butter: #ffd25a;
@@ -32,24 +31,23 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-paper: #0c0d2b;
-    --color-card: #14163f;
-    --color-ink: #ecebff;
-    --color-body: #a9aad6;
-    --color-mute: #8d8fc0;
-    --color-line: #25285c;
-    --color-line-strong: #3a3e86;
-    --color-link: #9a9dff;
+    --color-paper: #0e0f17;
+    --color-card: #161826;
+    --color-ink: #ececf6;
+    --color-body: #a8aabf;
+    --color-mute: #8b8ea4;
+    --color-line: #242639;
+    --color-line-strong: #3a3d57;
+    --color-link: #a3a8ff;
     --color-coral-deep: #ff7a60;
-    --color-stage: #1d2070;
-    --color-stage-deep: #141654;
+    --color-stage: #181b3d;
+    --color-stage-deep: #181b3d;
   }
 }
 
-/* Starts at the header's exact colour (stage-deep) and eases into stage, so
-   there is no seam between the header strip and the curved masthead. */
+/* Flat on purpose: same colour as the header, so nothing reads as a patch. */
 .stage-surface {
-  background: linear-gradient(180deg, var(--color-stage-deep) 0%, var(--color-stage) 100%);
+  background: var(--color-stage);
 }
 
 body {

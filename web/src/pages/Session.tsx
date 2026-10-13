@@ -12,7 +12,7 @@ import { clientId, getHostToken, savedName, saveName } from '../lib/session'
 type Participant = { id: string; name: string; host: boolean; live: boolean }
 type RoomState = { status: 'open' | 'recording' | 'finished'; recording_id: number | null; participants: Participant[] }
 
-const TILE_COLORS = ['#2a2ee6', '#ff5a3c', '#12133a', '#6a4cff', '#0f8f6e']
+const TILE_COLORS = ['#343a9c', '#ff5a3c', '#14162b', '#7a6cf0', '#0f8f6e']
 const colorFor = (s: string) => TILE_COLORS[[...s].reduce((a, c) => a + c.charCodeAt(0), 0) % TILE_COLORS.length]
 
 function Masthead({ title, children }: { title: string; children?: ReactNode }) {

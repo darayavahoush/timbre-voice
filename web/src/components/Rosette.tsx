@@ -26,6 +26,11 @@ export function Rosette({ live, children }: { live: RefObject<Live>; children?: 
       const dpr = window.devicePixelRatio || 1
       const w = canvas.clientWidth
       const h = canvas.clientHeight
+      // Not laid out yet (hidden tab, zero-size container): skip this frame.
+      if (w < 1 || h < 1) {
+        raf = requestAnimationFrame(draw)
+        return
+      }
       if (canvas.width !== Math.round(w * dpr)) {
         canvas.width = Math.round(w * dpr)
         canvas.height = Math.round(h * dpr)
@@ -46,7 +51,7 @@ export function Rosette({ live, children }: { live: RefObject<Live>; children?: 
         let target: number
         if (hot) {
           const k = Math.round(2 + Math.pow(u, 1.5) * 90)
-          target = Math.min(1, (L.bins![k] / 255) * (1.15 + u * 0.9))
+          target = Math.min(1, ((L.bins![Math.min(k, L.bins!.length - 1)] ?? 0) / 255) * (1.15 + u * 0.9))
         } else {
           const b = reduce ? 0 : Math.sin(t / 1400 + j * 0.28) * 0.5 + Math.sin(t / 2300 - j * 0.11) * 0.5
           target = 0.17 + 0.13 * (b + 1) * (L.paused ? 0.35 : 1)
@@ -67,7 +72,7 @@ export function Rosette({ live, children }: { live: RefObject<Live>; children?: 
       g.lineWidth = 1.5
       g.strokeStyle = 'rgba(255,255,255,0.25)'
       g.beginPath()
-      g.arc(cx, cy, r0 - 10 - (hot ? L.level * 8 : 0), 0, Math.PI * 2)
+      g.arc(cx, cy, Math.max(1, r0 - 10 - (hot ? L.level * 8 : 0)), 0, Math.PI * 2)
       g.stroke()
       raf = requestAnimationFrame(draw)
     }

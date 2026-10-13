@@ -38,7 +38,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="min-h-screen bg-paper">
-        <header className="on-stage bg-stage-deep">
+        <header className="on-stage bg-stage">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
             <Wordmark />
             <div className="flex items-center gap-4">
