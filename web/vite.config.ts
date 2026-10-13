@@ -11,12 +11,14 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), wasm(), topLevelAwait()],
   // WASM glue uses top-level await; keep esbuild from down-leveling it.
   build: { target: 'esnext' },
+  // The DSP worker imports the WASM module too, so it needs the same plugins.
+  worker: { format: 'es', plugins: () => [wasm(), topLevelAwait()] },
   server: {
     port: 5173,
-    // Allow importing ASSIGNMENT.md from the repo root (one level above web/).
-    fs: { allow: ['.', '..'] },
     proxy: {
       '/api': { target: 'http://localhost:4010', changeOrigin: true },
+      // multiplayer sessions: websocket
+      '/socket': { target: 'http://localhost:4010', ws: true, changeOrigin: true },
       '/healthz': { target: 'http://localhost:4010', changeOrigin: true },
     },
   },

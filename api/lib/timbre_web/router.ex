@@ -11,9 +11,25 @@ defmodule TimbreWeb.Router do
     get "/readyz", HealthController, :ready
   end
 
+  # Media endpoint: no `:accepts` — <audio> elements send arbitrary Accept headers.
+  scope "/api", TimbreWeb do
+    get "/recordings/:id/audio", RecordingController, :audio
+  end
+
   scope "/api", TimbreWeb do
     pipe_through :api
 
     get "/hello", HelloController, :show
+
+    resources "/recordings", RecordingController, only: [:index, :show, :create, :update, :delete]
+    post "/recordings/:id/transcribe", RecordingController, :transcribe
+
+    post "/sessions", SessionController, :create
+    get "/sessions/:id", SessionController, :show
+  end
+
+  # Everything else is the single-page app (production builds only).
+  scope "/", TimbreWeb do
+    get "/*path", SpaController, :index
   end
 end

@@ -22,3 +22,8 @@ config :phoenix, :plug_init_mode, :runtime
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# Transcription talks to a Req.Test stub, never the network.
+config :timbre, Timbre.Transcription,
+  api_key: "test-key",
+  req_options: [plug: {Req.Test, Timbre.Transcription}]

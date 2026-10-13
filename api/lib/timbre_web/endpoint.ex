@@ -11,9 +11,11 @@ defmodule TimbreWeb.Endpoint do
     same_site: "Lax"
   ]
 
-  # socket "/live", Phoenix.LiveView.Socket,
-  #   websocket: [connect_info: [session: @session_options]],
-  #   longpoll: [connect_info: [session: @session_options]]
+  # Multiplayer sessions: mic audio flows over this socket. Audio frames are
+  # ~4 KB, so a small frame cap is plenty and keeps abuse cheap to reject.
+  socket "/socket", TimbreWeb.UserSocket,
+    websocket: [max_frame_size: 262_144],
+    longpoll: false
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -40,6 +42,8 @@ defmodule TimbreWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
+    # recordings are uploaded as multipart; Recording caps the audio at 50 MB
+    length: 64_000_000,
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride

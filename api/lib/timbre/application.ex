@@ -12,6 +12,9 @@ defmodule Timbre.Application do
       Timbre.Repo,
       {DNSCluster, query: Application.get_env(:timbre, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Timbre.PubSub},
+      # live multiplayer rooms: one process per active session
+      {Registry, keys: :unique, name: Timbre.Sessions.Registry},
+      {DynamicSupervisor, name: Timbre.Sessions.RoomSupervisor, strategy: :one_for_one},
       # Start a worker by calling: Timbre.Worker.start_link(arg)
       # {Timbre.Worker, arg},
       # Start to serve requests, typically the last entry

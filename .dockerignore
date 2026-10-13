@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/_build
+**/deps
+web/dist
+web/crates/*/target
+web/crates/*/pkg
+api/.tmp
+.direnv

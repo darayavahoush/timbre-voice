@@ -24,3 +24,7 @@ result-*
 # misc
 .DS_Store
 *.log
+
+# built frontend copied into the Phoenix release (see Dockerfile)
+api/priv/static/index.html
+api/priv/static/assets/

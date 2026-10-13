@@ -25,6 +25,21 @@ end
 config :timbre, TimbreWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4010"))]
 
+# Optional bonus feature: transcript + AI summary through any OpenAI-compatible
+# API. Only keys that are actually set are applied so defaults/test config stay.
+if config_env() != :test do
+  llm =
+    [
+      api_key: System.get_env("OPENAI_API_KEY"),
+      base_url: System.get_env("OPENAI_BASE_URL"),
+      transcription_model: System.get_env("TRANSCRIPTION_MODEL"),
+      chat_model: System.get_env("SUMMARY_MODEL")
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+  config :timbre, Timbre.Transcription, llm
+end
+
 if config_env() == :prod do
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you
