@@ -53,7 +53,8 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  render_host = System.get_env("RENDER_EXTERNAL_HOSTNAME")
+  host = System.get_env("PHX_HOST") || render_host || "example.com"
 
   # SQLite file. Point DATABASE_PATH at a mounted volume in prod so the data
   # survives restarts (e.g. Fly.io / Railway persistent disk).

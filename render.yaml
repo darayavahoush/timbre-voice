@@ -1,0 +1,18 @@
+# Render Blueprint: free web service built from the Dockerfile.
+# Free instances have no persistent disk, so SQLite lives in /tmp and resets
+# on every restart/deploy. Fine for a demo; use a disk (paid) to keep data.
+services:
+  - type: web
+    name: timbre-voice
+    runtime: docker
+    plan: free
+    healthCheckPath: /readyz
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: DATABASE_PATH
+        value: /tmp/timbre.db
+      - key: SECRET_KEY_BASE
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
