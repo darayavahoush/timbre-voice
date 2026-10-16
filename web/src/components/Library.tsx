@@ -1,79 +1,184 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import { deleteRecording, renameRecording, subtitlesUrl, transcribeRecording, type Recording } from '../lib/api'
+import { deleteRecording, renameRecording, transcribeRecording, type Recording } from '../lib/api'
 import { fmtDate, fmtDuration, fmtSize } from '../lib/format'
-import { Button, ErrorNote, buttonClass } from './ui'
-import { Player } from './Player'
+import { useHotkeys } from '../lib/hooks'
+import { Button, Card, ErrorNote, inputClass, Kbd, Segmented, Spinner } from './ui'
 
+const KIND_LABEL = { original: 'original', processed: 'processed', mix: 'session mix' } as const
+type Kind = 'all' | Recording['kind']
+type Sort = 'newest' | 'oldest' | 'longest' | 'title'
 type Change = (next: (prev: Recording[]) => Recording[]) => void
-type Filter = 'all' | Recording['kind']
 
-const KIND = {
-  original: { label: 'Recording', tone: 'bg-link/12 text-link' },
-  processed: { label: 'Processed', tone: 'bg-coral/15 text-coral-deep' },
-  mix: { label: 'Session mix', tone: 'bg-ink/10 text-ink' },
-} as const
-
-const FILTERS: { id: Filter; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'original', label: 'Recordings' },
-  { id: 'processed', label: 'Processed' },
-  { id: 'mix', label: 'Mixes' },
-]
+const SORTS: Record<Sort, (a: Recording, b: Recording) => number> = {
+  newest: (a, b) => b.inserted_at.localeCompare(a.inserted_at),
+  oldest: (a, b) => a.inserted_at.localeCompare(b.inserted_at),
+  longest: (a, b) => b.duration_ms - a.duration_ms,
+  title: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }),
+}
 
 export function Library({ recordings, onChange }: { recordings: Recording[] | null; onChange: Change }) {
-  const [filter, setFilter] = useState<Filter>('all')
+  const [query, setQuery] = useState('')
+  const [kind, setKind] = useState<Kind>('all')
+  const [sort, setSort] = useState<Sort>('newest')
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkError, setBulkError] = useState<string | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  useHotkeys({
+    '/': (e) => {
+      e.preventDefault()
+      searchRef.current?.focus()
+    },
+  })
+
+  // Only one clip plays at a time.
+  useEffect(() => {
+    const onPlay = (e: Event) => document.querySelectorAll('audio').forEach((a) => a !== e.target && a.pause())
+    document.addEventListener('play', onPlay, true)
+    return () => document.removeEventListener('play', onPlay, true)
+  }, [])
+
+  const visible = useMemo(() => {
+    if (!recordings) return []
+    const q = query.trim().toLowerCase()
+    return recordings
+      .filter(
+        (r) =>
+          (kind === 'all' || r.kind === kind) &&
+          (!q || [r.title, r.transcript, r.summary].some((s) => s?.toLowerCase().includes(q))),
+      )
+      .sort(SORTS[sort])
+  }, [recordings, query, kind, sort])
 
   if (recordings === null)
     return (
-      <div className="space-y-3" aria-busy="true" aria-label="Loading recordings">
+      <ul className="space-y-3" aria-busy="true" aria-label="Loading recordings">
         {[0, 1, 2].map((i) => (
-          <div key={i} className="h-32 animate-pulse rounded-2xl bg-ink/5" />
-        ))}
-      </div>
-    )
-
-  if (recordings.length === 0)
-    return (
-      <div className="rounded-2xl border border-dashed border-line-strong px-6 py-14 text-center">
-        <p className="font-display text-2xl text-ink">Nothing recorded yet.</p>
-        <p className="mt-2 text-mute">Press the coral button above and say something. Your takes will land here.</p>
-      </div>
-    )
-
-  const count = (f: Filter) => (f === 'all' ? recordings.length : recordings.filter((r) => r.kind === f).length)
-  const shown = filter === 'all' ? recordings : recordings.filter((r) => r.kind === filter)
-  const titles = new Map(recordings.map((r) => [r.id, r.title]))
-
-  return (
-    <div>
-      <div role="tablist" aria-label="Filter recordings" className="mb-5 flex flex-wrap gap-2">
-        {FILTERS.filter((f) => f.id === 'all' || count(f.id) > 0).map((f) => (
-          <button
-            key={f.id}
-            role="tab"
-            aria-selected={filter === f.id}
-            onClick={() => setFilter(f.id)}
-            className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-              filter === f.id ? 'bg-ink text-paper' : 'text-mute hover:bg-ink/5 hover:text-ink'
-            }`}
-          >
-            {f.label} <span className="tabular-nums opacity-60">{count(f.id)}</span>
-          </button>
-        ))}
-      </div>
-      <ul className="divide-y divide-line border-y border-line">
-        {shown.map((r) => (
-          <li key={r.id}>
-            <Item recording={r} parentTitle={r.parent_id ? titles.get(r.parent_id) : undefined} onChange={onChange} />
-          </li>
+          <li key={i} className="h-28 rounded-lg border border-hairline bg-canvas-soft motion-safe:animate-pulse" />
         ))}
       </ul>
+    )
+  if (recordings.length === 0)
+    return (
+      <Card>
+        <p className="text-sm text-mute">No recordings yet — hit Record above to make your first one.</p>
+      </Card>
+    )
+
+  const chosen = visible.filter((r) => selected.has(r.id))
+  const toggle = (id: number) =>
+    setSelected((s) => {
+      const n = new Set(s)
+      if (!n.delete(id)) n.add(id)
+      return n
+    })
+  const exitSelect = () => {
+    setSelecting(false)
+    setSelected(new Set())
+    setBulkError(null)
+  }
+
+  async function bulkDelete() {
+    if (!chosen.length || !confirm(`Delete ${chosen.length} recording${chosen.length > 1 ? 's' : ''}? This can’t be undone.`)) return
+    setBulkBusy(true)
+    setBulkError(null)
+    const results = await Promise.allSettled(chosen.map((r) => deleteRecording(r.id)))
+    const gone = new Set(chosen.filter((_, i) => results[i].status === 'fulfilled').map((r) => r.id))
+    onChange((prev) => prev.filter((r) => !gone.has(r.id)))
+    setSelected((s) => new Set([...s].filter((id) => !gone.has(id))))
+    const failedCount = chosen.length - gone.size
+    if (failedCount) setBulkError(`${failedCount} recording${failedCount > 1 ? 's' : ''} couldn’t be deleted.`)
+    else exitSelect()
+    setBulkBusy(false)
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          ref={searchRef}
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === 'Escape' && (setQuery(''), e.currentTarget.blur())}
+          placeholder="Search title or transcript"
+          aria-label="Search recordings"
+          className={`${inputClass} w-full flex-1 sm:w-auto`}
+        />
+        <Kbd>/</Kbd>
+        <Segmented
+          label="Filter by type"
+          value={kind}
+          onChange={setKind}
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'original', label: 'Originals' },
+            { value: 'processed', label: 'Processed' },
+            { value: 'mix', label: 'Mixes' },
+          ]}
+        />
+        <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort recordings" className={inputClass}>
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="longest">Longest</option>
+          <option value="title">Title A–Z</option>
+        </select>
+        <Button onClick={() => (selecting ? exitSelect() : setSelecting(true))} aria-pressed={selecting}>
+          {selecting ? 'Done' : 'Select'}
+        </Button>
+      </div>
+
+      {selecting && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-hairline bg-canvas-soft px-3 py-2 text-sm">
+          <span className="text-ink">{chosen.length} selected</span>
+          <Button variant="ghost" className="!py-0.5" onClick={() => setSelected(new Set(visible.map((r) => r.id)))}>Select all {visible.length}</Button>
+          <Button variant="ghost" className="!py-0.5" onClick={() => setSelected(new Set())} disabled={!chosen.length}>Clear</Button>
+          <span className="grow" />
+          <Button variant="danger" className="!py-0.5" onClick={bulkDelete} disabled={!chosen.length || bulkBusy}>
+            {bulkBusy ? <><Spinner /> Deleting…</> : 'Delete selected'}
+          </Button>
+        </div>
+      )}
+      <ErrorNote error={bulkError} />
+
+      <p className="text-xs text-mute" aria-live="polite">
+        {visible.length === recordings.length ? `${recordings.length} recording${recordings.length > 1 ? 's' : ''}` : `Showing ${visible.length} of ${recordings.length}`}
+      </p>
+
+      {visible.length === 0 ? (
+        <Card>
+          <p className="text-sm text-mute">Nothing matches.</p>
+          <Button variant="ghost" className="mt-2 !px-0" onClick={() => { setQuery(''); setKind('all') }}>Clear search and filters</Button>
+        </Card>
+      ) : (
+        <ul className="space-y-3">
+          {visible.map((r) => (
+            <li key={r.id}>
+              <Item recording={r} onChange={onChange} selecting={selecting} selected={selected.has(r.id)} onToggle={() => toggle(r.id)} />
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
 
-function Item({ recording: r, parentTitle, onChange }: { recording: Recording; parentTitle?: string; onChange: Change }) {
+function Item({
+  recording: r,
+  onChange,
+  selecting,
+  selected,
+  onToggle,
+}: {
+  recording: Recording
+  onChange: Change
+  selecting: boolean
+  selected: boolean
+  onToggle: () => void
+}) {
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(r.title)
   const [busy, setBusy] = useState<'transcribe' | 'delete' | null>(null)
@@ -82,9 +187,9 @@ function Item({ recording: r, parentTitle, onChange }: { recording: Recording; p
 
   async function rename() {
     setEditing(false)
-    if (title.trim() === r.title) return
+    if (!title.trim() || title.trim() === r.title) return setTitle(r.title)
     try {
-      replace(await renameRecording(r.id, title))
+      replace(await renameRecording(r.id, title.trim()))
     } catch (e) {
       setTitle(r.title)
       setError(e instanceof Error ? e.message : 'Rename failed')
@@ -104,7 +209,7 @@ function Item({ recording: r, parentTitle, onChange }: { recording: Recording; p
   }
 
   async function remove() {
-    if (!confirm(`Delete “${r.title}”? This can’t be undone.`)) return
+    if (!confirm(`Delete “${r.title}”?`)) return
     setBusy('delete')
     try {
       await deleteRecording(r.id)
@@ -115,78 +220,70 @@ function Item({ recording: r, parentTitle, onChange }: { recording: Recording; p
     }
   }
 
-  const kind = KIND[r.kind]
-
   return (
-    <article className="py-6">
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-        <div className="min-w-0">
-          {editing ? (
-            <input
-              autoFocus
-              value={title}
-              maxLength={120}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={rename}
-              onKeyDown={(e) => e.key === 'Enter' && rename()}
-              aria-label="Title"
-              className="w-full rounded-lg border border-line-strong bg-card px-2 py-1 font-display text-xl text-ink"
-            />
-          ) : (
-            <h3 className="truncate font-display text-xl font-medium text-ink">
-              <button onClick={() => setEditing(true)} title="Click to rename" className="text-left hover:underline">
+    <Card className={selected ? 'ring-2 ring-link' : ''}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex min-w-0 items-start gap-3">
+          {selecting && (
+            <input type="checkbox" checked={selected} onChange={onToggle} aria-label={`Select ${r.title}`} className="mt-1.5" />
+          )}
+          <div className="min-w-0">
+            {editing ? (
+              <input
+                autoFocus
+                value={title}
+                maxLength={120}
+                onChange={(e) => setTitle(e.target.value)}
+                onBlur={rename}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') rename()
+                  if (e.key === 'Escape') (setTitle(r.title), setEditing(false))
+                }}
+                aria-label="Title"
+                className="rounded border border-hairline-strong bg-canvas px-2 py-0.5 text-sm text-ink"
+              />
+            ) : (
+              <button onClick={() => setEditing(true)} title="Rename" className="max-w-full truncate text-left font-medium text-ink hover:underline">
                 {r.title}
               </button>
-            </h3>
-          )}
-          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-mute">
-            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${kind.tone}`}>{kind.label}</span>
-            <span>{fmtDate(r.inserted_at)}</span>
-            <span className="tabular-nums">{fmtDuration(r.duration_ms)}</span>
-            <span className="tabular-nums">{fmtSize(r.byte_size)}</span>
-          </p>
-          {parentTitle && <p className="mt-1 text-[13px] text-mute">Made from “{parentTitle}”</p>}
+            )}
+            <p className="mt-0.5 text-xs text-mute">
+              <span className="mr-2 rounded-full border border-hairline px-1.5 py-0.5">{KIND_LABEL[r.kind]}</span>
+              {fmtDate(r.inserted_at)} · {fmtDuration(r.duration_ms)} · {fmtSize(r.byte_size)}
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Link to={`/studio/${r.id}`} className={buttonClass('outline', 'sm')}>
-            Open in Studio
+        <div className="flex flex-wrap gap-2">
+          <Link to={`/studio/${r.id}`} className="inline-flex items-center rounded-md border border-hairline-strong px-3 py-1.5 text-sm font-medium text-ink hover:bg-canvas-soft">
+            Studio
           </Link>
-          <Button size="sm" onClick={transcribe} disabled={busy !== null}>
-            {busy === 'transcribe' ? 'Transcribing…' : r.transcript ? 'Re-transcribe' : 'Transcribe'}
+          <Button onClick={transcribe} disabled={busy !== null}>
+            {busy === 'transcribe' ? <><Spinner /> Transcribing…</> : r.transcript ? 'Re-transcribe' : 'Transcribe'}
           </Button>
-          {r.has_subtitles && (
-            <a
-              href={subtitlesUrl(r.id)}
-              download
-              title="Download subtitles with timestamps (SubRip)"
-              className={buttonClass('outline', 'sm')}
-            >
-              .srt
-            </a>
-          )}
-          <Button variant="ghost" size="sm" onClick={remove} disabled={busy !== null} aria-label={`Delete ${r.title}`}>
+          <a href={r.audio_url} download className="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-mute hover:text-ink">
+            Download
+          </a>
+          <Button variant="ghost" onClick={remove} disabled={busy !== null} aria-label={`Delete ${r.title}`}>
             Delete
           </Button>
         </div>
       </div>
-
-      <Player src={r.audio_url} durationMs={r.duration_ms} className="mt-4" />
-
+      <audio controls preload="none" src={r.audio_url} className="mt-3 w-full" />
       {r.summary && (
-        <p className="mt-4 max-w-prose text-[15px] leading-relaxed text-ink">
-          <span className="font-semibold">Summary: </span>
+        <p className="mt-3 text-sm text-ink">
+          <span className="font-medium">Summary: </span>
           {r.summary}
         </p>
       )}
       {r.transcript && (
-        <details className="mt-3 max-w-prose text-sm">
-          <summary className="cursor-pointer text-mute hover:text-ink">Transcript</summary>
-          <p className="mt-2 whitespace-pre-wrap leading-relaxed text-body">{r.transcript}</p>
+        <details className="mt-2 text-sm">
+          <summary className="cursor-pointer text-mute">Transcript</summary>
+          <p className="mt-1 whitespace-pre-wrap text-body">{r.transcript}</p>
         </details>
       )}
-      <div className="mt-3">
+      <div className="mt-2">
         <ErrorNote error={error} />
       </div>
-    </article>
+    </Card>
   )
 }

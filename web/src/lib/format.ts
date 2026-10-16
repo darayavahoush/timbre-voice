@@ -19,9 +19,3 @@ export function pickMime(): string | undefined {
 export function defaultTitle() {
   return `Recording ${new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
 }
-
-/** Live clock: floors to the second so a running timer never runs ahead. */
-export function fmtClock(ms: number) {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
-}

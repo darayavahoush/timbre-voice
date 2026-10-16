@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { Button, ErrorNote, Icon, Stage, Switch, buttonClass } from '../components/ui'
-import { Player } from '../components/Player'
+import { ABPlayer, type Side } from '../components/ABPlayer'
+import { Button, Card, ErrorNote, inputClass, Kbd, Spinner } from '../components/ui'
 import { Waveform } from '../components/Waveform'
 import { getRecording, uploadRecording, type Recording } from '../lib/api'
 import { analyze, decodeAudio, process as runChain } from '../lib/dsp'
 import type { Effect } from '../lib/dspTypes'
 import { fmtDuration } from '../lib/format'
+import { useHistory, useHotkeys, useTitle } from '../lib/hooks'
+import { loadJSON, saveJSON } from '../lib/storage'
 
 type Field = { key: string; label: string; min: number; max: number; step: number; unit: string }
 type Def = { type: Effect['type']; label: string; hint: string; fields: Field[]; defaults: Record<string, number> }
@@ -47,27 +49,43 @@ const PRESETS: { name: string; on: Effect['type'][] }[] = [
   { name: 'Radio', on: ['highpass', 'lowpass', 'echo', 'normalize'] },
 ]
 
+type SavedPreset = { name: string; fx: State }
+const PRESET_KEY = 'timbre.studio.presets'
+const LIVE_KEY = 'timbre.studio.live'
+
+/** Fill gaps so presets saved by an older version of the effect list still load. */
+const hydrate = (fx: Partial<State>): State =>
+  Object.fromEntries(DEFS.map((d) => [d.type, { on: !!fx[d.type]?.on, values: { ...d.defaults, ...fx[d.type]?.values } }]))
+
 export default function Studio() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [rec, setRec] = useState<Recording | null>(null)
+  useTitle(rec ? `${rec.title} — Studio` : 'Studio')
   const [source, setSource] = useState<{ samples: Float32Array; channels: number; sampleRate: number } | null>(null)
   const [peaks, setPeaks] = useState<Float32Array | null>(null)
-  const [fx, setFx] = useState<State>(initial)
-  const [out, setOut] = useState<{ url: string; blob: Blob; peaks: Float32Array; durationMs: number; key: string } | null>(null)
-  const [busy, setBusy] = useState<'process' | 'save' | null>(null)
+  const history = useHistory<State>(initial)
+  const fx = history.state
+  const [out, setOut] = useState<{ url: string; blob: Blob; peaks: Float32Array; durationMs: number } | null>(null)
+  const [busy, setBusy] = useState<'process' | 'preview' | 'save' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [side, setSide] = useState<Side>('B')
+  const [live, setLive] = useState<boolean>(() => loadJSON(LIVE_KEY, false))
+  const [saved, setSaved] = useState<SavedPreset[]>(() => loadJSON(PRESET_KEY, []))
+  const [naming, setNaming] = useState(false)
+  const [presetName, setPresetName] = useState('')
   const urlRef = useRef<string | null>(null)
-  const beforeAudio = useRef<HTMLAudioElement>(null)
-  const afterAudio = useRef<HTMLAudioElement>(null)
+  const runId = useRef(0)
+  const playerRef = useRef<HTMLAudioElement>(null)
 
   useEffect(() => {
     let dead = false
     ;(async () => {
       try {
         const r = await getRecording(Number(id))
-        const blob = await (await fetch(r.audio_url)).blob()
-        const dec = await decodeAudio(blob)
+        const res = await fetch(r.audio_url)
+        if (!res.ok) throw new Error(`Couldn’t download the audio (${res.status})`)
+        const dec = await decodeAudio(await res.blob())
         const a = await analyze(dec.samples, dec.channels)
         if (dead) return
         setRec(r)
@@ -87,25 +105,41 @@ export default function Studio() {
     () => DEFS.filter((d) => fx[d.type].on).map((d) => ({ type: d.type, ...fx[d.type].values }) as Effect),
     [fx],
   )
-  const chainKey = useMemo(() => JSON.stringify(chain), [chain])
-  // The preview no longer matches the controls once any switch or slider moves.
-  const stale = out !== null && out.key !== chainKey
 
-  async function apply() {
-    if (!source) return
-    setBusy('process')
-    setError(null)
-    try {
-      const res = await runChain(source.samples, source.channels, source.sampleRate, chain)
-      const blob = new Blob([res.wav! as BlobPart], { type: 'audio/wav' })
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current)
-      urlRef.current = URL.createObjectURL(blob)
-      setOut({ url: urlRef.current, blob, peaks: res.peaks, durationMs: res.durationMs!, key: chainKey })
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Processing failed')
-    } finally {
-      setBusy(null)
-    }
+  // Each run gets an id; results from a superseded run are dropped so a slow
+  // render can never overwrite a newer one.
+  const run = useCallback(
+    async (mode: 'process' | 'preview') => {
+      if (!source) return
+      const mine = ++runId.current
+      setBusy(mode)
+      setError(null)
+      try {
+        const res = await runChain(source.samples, source.channels, source.sampleRate, chain)
+        if (mine !== runId.current) return
+        const blob = new Blob([res.wav! as BlobPart], { type: 'audio/wav' })
+        if (urlRef.current) URL.revokeObjectURL(urlRef.current)
+        urlRef.current = URL.createObjectURL(blob)
+        setOut({ url: urlRef.current, blob, peaks: res.peaks, durationMs: res.durationMs! })
+      } catch (e) {
+        if (mine === runId.current) setError(e instanceof Error ? e.message : 'Processing failed')
+      } finally {
+        if (mine === runId.current) setBusy(null)
+      }
+    },
+    [source, chain],
+  )
+
+  // Live preview: re-render shortly after the last change.
+  useEffect(() => {
+    if (!live || !source) return
+    const t = setTimeout(() => void run('preview'), 350)
+    return () => clearTimeout(t)
+  }, [live, source, run])
+
+  const toggleLive = (on: boolean) => {
+    setLive(on)
+    saveJSON(LIVE_KEY, on)
   }
 
   async function save() {
@@ -118,7 +152,7 @@ export default function Studio() {
         sampleRate: source.sampleRate,
         kind: 'processed',
         parentId: rec.id,
-        effects: { chain: JSON.parse(out.key) },
+        effects: { chain },
       })
       navigate('/')
     } catch (e) {
@@ -127,154 +161,164 @@ export default function Studio() {
     }
   }
 
-  const preset = (on: Effect['type'][]) =>
-    setFx((prev) => Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, { ...v, on: on.includes(k as Effect['type']) }])))
+  const setOn = (on: Effect['type'][]) =>
+    history.set((prev) => Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, { ...v, on: on.includes(k as Effect['type']) }])))
 
-  const loading = !source && !error
+  function savePreset() {
+    const name = presetName.trim()
+    if (!name) return
+    const next = [...saved.filter((p) => p.name !== name), { name, fx }]
+    setSaved(next)
+    saveJSON(PRESET_KEY, next)
+    setNaming(false)
+    setPresetName('')
+  }
+
+  function deletePreset(name: string) {
+    const next = saved.filter((p) => p.name !== name)
+    setSaved(next)
+    saveJSON(PRESET_KEY, next)
+  }
+
+  const seconds = source ? source.samples.length / source.channels / source.sampleRate : 0
+
+  useHotkeys({
+    a: () => source && busy === null && void run('process'),
+    b: () => out && setSide((s) => (s === 'A' ? 'B' : 'A')),
+    ' ': (e) => {
+      const el = playerRef.current
+      if (!el) return
+      e.preventDefault()
+      void (el.paused ? el.play().catch(() => {}) : el.pause())
+    },
+    'mod+z': (e) => (e.preventDefault(), history.undo()),
+    'mod+shift+z': (e) => (e.preventDefault(), history.redo()),
+    'mod+y': (e) => (e.preventDefault(), history.redo()),
+  })
 
   return (
-    <>
-      <Stage>
-        <Link to="/" className="inline-flex items-center gap-1.5 text-sm text-white/80 hover:text-white">
-          <Icon name="chevron" className="h-3.5 w-3.5" />
-          Library
-        </Link>
-        <h1 className="mt-6 max-w-3xl text-[clamp(2.5rem,6vw,4.5rem)] font-light leading-[1.02] tracking-[-0.02em]">
-          {rec ? rec.title : 'Studio'}
-        </h1>
-        <p className="mt-4 max-w-xl text-lg text-white/80">
-          Effects run in your browser, so nothing is uploaded until you save.
-        </p>
-      </Stage>
-
-      <div className="mx-auto grid max-w-6xl gap-10 px-6 py-12 lg:grid-cols-[minmax(0,1fr)_23rem]">
-        <section aria-labelledby="fx-h">
-          <div className="mb-6 flex flex-wrap items-center gap-2">
-            <h2 id="fx-h" className="mr-3 text-3xl font-medium tracking-tight text-ink">
-              Effects
-            </h2>
-            {PRESETS.map((p) => (
-              <Button key={p.name} size="sm" onClick={() => preset(p.on)}>
-                {p.name}
-              </Button>
-            ))}
-            <Button variant="ghost" size="sm" onClick={() => preset([])}>
-              Clear all
-            </Button>
-          </div>
-
-          <ul className="space-y-3">
-            {DEFS.map((d) => {
-              const on = fx[d.type].on
-              return (
-                <li
-                  key={d.type}
-                  className={`rounded-2xl border p-4 transition-colors ${on ? 'border-coral/60 bg-card' : 'border-line bg-card/50'}`}
-                >
-                  <div className="flex items-center gap-4">
-                    <Switch
-                      checked={on}
-                      label={`Use ${d.label}`}
-                      onChange={(v) => setFx((p) => ({ ...p, [d.type]: { ...p[d.type], on: v } }))}
-                    />
-                    <div className="min-w-0">
-                      <p className="font-semibold text-ink">{d.label}</p>
-                      <p className="text-sm text-mute">{d.hint}</p>
-                    </div>
-                  </div>
-                  {on && (
-                    <div className="mt-4 grid gap-x-8 gap-y-3 pl-14 sm:grid-cols-2">
-                      {d.fields.map((f) => {
-                        const v = fx[d.type].values[f.key]
-                        return (
-                          <label key={f.key} className="block text-sm text-mute">
-                            <span className="flex justify-between">
-                              {f.label}
-                              <span className="tabular-nums text-ink">
-                                {v} {f.unit}
-                              </span>
-                            </span>
-                            <input
-                              type="range"
-                              min={f.min}
-                              max={f.max}
-                              step={f.step}
-                              value={v}
-                              aria-label={`${d.label} ${f.label}`}
-                              style={{ ['--p' as string]: `${((v - f.min) / (f.max - f.min)) * 100}%` }}
-                              onChange={(e) =>
-                                setFx((p) => ({
-                                  ...p,
-                                  [d.type]: { ...p[d.type], values: { ...p[d.type].values, [f.key]: Number(e.target.value) } },
-                                }))
-                              }
-                              className="w-full"
-                            />
-                          </label>
-                        )
-                      })}
-                    </div>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </section>
-
-        <aside className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-          <ErrorNote error={error} />
-
-          <div className="rounded-2xl border border-line bg-card p-5">
-            <h2 className="text-lg font-medium text-ink">Before</h2>
-            {loading ? (
-              <div className="mt-3 h-20 animate-pulse rounded-xl bg-ink/5" aria-label="Reading your recording" />
-            ) : (
-              <Waveform
-                peaks={peaks}
-                label="Original waveform. Click to seek"
-                className="mt-3 text-link"
-                audioRef={beforeAudio}
-                durationMs={rec?.duration_ms}
-              />
-            )}
-            {rec && <Player src={rec.audio_url} durationMs={rec.duration_ms} className="mt-3" audioRef={beforeAudio} />}
-          </div>
-
-          <div className="rounded-2xl border border-line bg-card p-5">
-            <Button variant="primary" onClick={apply} disabled={!source || busy !== null} className="w-full">
-              {busy === 'process' ? 'Processing…' : out ? (stale ? 'Apply changes' : 'Apply again') : 'Apply effects'}
-            </Button>
-            <p className="mt-2 text-center text-sm text-mute">
-              {chain.length ? `${chain.length} effect${chain.length > 1 ? 's' : ''} selected` : 'No effects selected, mono mixdown only'}
-            </p>
-          </div>
-
-          {out && (
-            <div className={`rounded-2xl border bg-card p-5 ${stale ? 'border-butter' : 'border-line'}`}>
-              <h2 className="text-lg font-medium text-ink">
-                After <span className="font-sans text-sm font-normal text-mute">{fmtDuration(out.durationMs)}</span>
-              </h2>
-              {stale && <p className="mt-1 text-sm text-ink">You’ve changed settings since this preview. Apply again to hear them.</p>}
-              <Waveform
-                peaks={out.peaks}
-                label="Processed waveform. Click to seek"
-                className="mt-3 text-coral"
-                audioRef={afterAudio}
-                durationMs={out.durationMs}
-              />
-              <Player src={out.url} durationMs={out.durationMs} className="mt-3" audioRef={afterAudio} />
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button variant="ink" onClick={save} disabled={busy !== null || stale}>
-                  {busy === 'save' ? 'Saving…' : 'Save to library'}
-                </Button>
-                <a href={out.url} download={`${rec?.title ?? 'recording'}.wav`} className={buttonClass('outline')}>
-                  Download WAV
-                </a>
-              </div>
-            </div>
-          )}
-        </aside>
+    <div className="space-y-6">
+      <div>
+        <Link to="/" className="text-sm text-mute hover:text-ink">← Library</Link>
+        <h1 className="mt-1 text-xl font-semibold text-ink">{rec ? rec.title : 'Studio'}</h1>
+        <p className="text-sm text-mute">Effects run in your browser (Rust → WebAssembly); nothing is uploaded until you save.</p>
       </div>
-    </>
+      <ErrorNote error={error} />
+      <Card>
+        <h2 className="mb-2 text-sm font-semibold text-ink">{out ? 'Original' : 'Before'}</h2>
+        <Waveform peaks={peaks} label="Original waveform" />
+        {rec && !out && <audio ref={playerRef} controls src={rec.audio_url} className="mt-3 w-full" />}
+        {!rec && !error && <p className="mt-3 flex items-center gap-2 text-xs text-mute"><Spinner /> Loading and decoding…</p>}
+      </Card>
+
+      <Card>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <h2 className="mr-2 text-sm font-semibold text-ink">Effects</h2>
+          {PRESETS.map((p) => (
+            <Button key={p.name} onClick={() => setOn(p.on)} className="!py-1 text-xs">{p.name}</Button>
+          ))}
+          <Button variant="ghost" onClick={() => setOn([])} className="!py-1 text-xs">Clear</Button>
+          <span className="grow" />
+          <Button variant="ghost" onClick={history.undo} disabled={!history.canUndo} className="!py-1 text-xs" aria-label="Undo">↶ Undo</Button>
+          <Button variant="ghost" onClick={history.redo} disabled={!history.canRedo} className="!py-1 text-xs" aria-label="Redo">↷ Redo</Button>
+          <Button variant="ghost" onClick={() => history.set(initial())} className="!py-1 text-xs">Reset</Button>
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-hairline pb-4">
+          <span className="text-xs text-mute">My presets</span>
+          {saved.map((p) => (
+            <span key={p.name} className="inline-flex items-center rounded-md border border-hairline-strong">
+              <button onClick={() => history.set(hydrate(p.fx))} className="px-2 py-1 text-xs text-ink hover:bg-canvas-soft">{p.name}</button>
+              <button onClick={() => deletePreset(p.name)} aria-label={`Delete preset ${p.name}`} className="px-1.5 py-1 text-xs text-mute hover:text-red-500">×</button>
+            </span>
+          ))}
+          {naming ? (
+            <form className="inline-flex gap-2" onSubmit={(e) => (e.preventDefault(), savePreset())}>
+              <input autoFocus value={presetName} onChange={(e) => setPresetName(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setNaming(false)} maxLength={40} placeholder="Preset name" aria-label="Preset name" className={`${inputClass} !py-1 text-xs`} />
+              <Button type="submit" className="!py-1 text-xs" disabled={!presetName.trim()}>Save</Button>
+            </form>
+          ) : (
+            <Button variant="ghost" onClick={() => setNaming(true)} className="!py-1 text-xs">+ Save current</Button>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          {DEFS.map((d) => (
+            <div key={d.type} className={`rounded-md border p-3 ${fx[d.type].on ? 'border-hairline-strong' : 'border-hairline'}`}>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={fx[d.type].on}
+                  onChange={(e) => history.set((p) => ({ ...p, [d.type]: { ...p[d.type], on: e.target.checked } }), `on:${d.type}`)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-ink">{d.label}</span>
+                  <span className="block text-xs text-mute">{d.hint}</span>
+                </span>
+              </label>
+              {fx[d.type].on && (
+                <div className="mt-3 grid gap-3 pl-7 sm:grid-cols-2">
+                  {d.fields.map((f) => {
+                    const v = fx[d.type].values[f.key]
+                    return (
+                      <label key={f.key} className="text-xs text-mute">
+                        <span className="flex justify-between">
+                          {f.label}
+                          <span className="font-mono text-ink">{v} {f.unit}</span>
+                        </span>
+                        <input
+                          type="range" min={f.min} max={f.max} step={f.step} value={v}
+                          aria-label={`${d.label} ${f.label}`}
+                          aria-valuetext={`${v} ${f.unit}`.trim()}
+                          onChange={(e) =>
+                            history.set(
+                              (p) => ({ ...p, [d.type]: { ...p[d.type], values: { ...p[d.type].values, [f.key]: Number(e.target.value) } } }),
+                              `v:${d.type}.${f.key}`,
+                            )
+                          }
+                          className="w-full"
+                        />
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button variant="primary" onClick={() => run('process')} disabled={!source || busy === 'process' || busy === 'save'}>
+            {busy === 'process' ? <><Spinner /> Processing…</> : <>Apply effects <Kbd>A</Kbd></>}
+          </Button>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={live} onChange={(e) => toggleLive(e.target.checked)} />
+            Live preview
+            {busy === 'preview' && <Spinner />}
+          </label>
+          <span className="text-xs text-mute">{chain.length ? `${chain.length} effect${chain.length > 1 ? 's' : ''}` : 'Mono mixdown only'}</span>
+        </div>
+        {live && seconds > 120 && (
+          <p className="mt-2 text-xs text-mute">This clip is {fmtDuration(seconds * 1000)} long — live preview re-renders all of it on every change, so it may lag. Turn it off to apply manually.</p>
+        )}
+      </Card>
+
+      {out && rec && (
+        <Card>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Processed <span className="font-normal text-mute">· {fmtDuration(out.durationMs)}</span></h2>
+          <Waveform peaks={out.peaks} label="Processed waveform" />
+          <div className="mt-3">
+            <ABPlayer aUrl={rec.audio_url} bUrl={out.url} side={side} onSide={setSide} audioRef={playerRef} />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <Button variant="primary" onClick={save} disabled={busy === 'save' || busy === 'process'}>
+              {busy === 'save' ? <><Spinner /> Saving…</> : 'Save as new recording'}
+            </Button>
+            <a href={out.url} download={`${rec.title}.wav`} className="inline-flex items-center rounded-md border border-hairline-strong px-3 py-1.5 text-sm font-medium text-ink hover:bg-canvas-soft">Download WAV</a>
+          </div>
+        </Card>
+      )}
+    </div>
   )
 }

@@ -1,51 +1,69 @@
 import { useEffect, useRef, useState } from 'react'
 import { uploadRecording, type Recording } from '../lib/api'
-import { defaultTitle, fmtClock, pickMime } from '../lib/format'
+import { defaultTitle, fmtDuration, pickMime } from '../lib/format'
+import { useHotkeys } from '../lib/hooks'
 import { kitReady } from '../lib/kit'
-import { Button, ErrorNote, Icon } from './ui'
-import { Rosette, newLive } from './Rosette'
+import { Button, Card, ErrorNote, inputClass, Kbd, Meter, ProgressBar, Spinner } from './ui'
 
 type State = 'idle' | 'recording' | 'paused' | 'saving'
+type Take = { blob: Blob; durationMs: number; title: string }
 
-/** Stage-side recorder: a coral disc inside the live rosette, with pause, discard and a spacebar shortcut. */
 export function Recorder({ onSaved }: { onSaved: (r: Recording) => void }) {
   const [state, setState] = useState<State>('idle')
   const [elapsed, setElapsed] = useState(0)
+  const [level, setLevel] = useState(0)
   const [title, setTitle] = useState('')
+  const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  const [clipping, setClipping] = useState(false)
-
-  const live = useRef(newLive())
+  // A take whose upload failed is kept so a flaky connection never loses a recording.
+  const [failed, setFailed] = useState<Take | null>(null)
   const cleanup = useRef<(() => void) | null>(null)
   const recorder = useRef<MediaRecorder | null>(null)
-  const titleRef = useRef('')
   const discard = useRef(false)
-  // Pause-aware clock: `acc` is time already banked, `since` is when the running segment began.
-  const clock = useRef<{ acc: number; since: number | null }>({ acc: 0, since: null })
-  const toggleRef = useRef<() => void>(() => {})
-  const stateRef = useRef<State>('idle')
+  // Wall-clock excluding paused time: `since === 0` means paused.
+  const clock = useRef({ acc: 0, since: 0 })
+  const now = () => clock.current.acc + (clock.current.since ? performance.now() - clock.current.since : 0)
 
-  titleRef.current = title
-  stateRef.current = state
+  const active = state === 'recording' || state === 'paused'
 
-  const elapsedMs = () => clock.current.acc + (clock.current.since === null ? 0 : performance.now() - clock.current.since)
-  const freeze = () => {
-    clock.current.acc = elapsedMs()
-    clock.current.since = null
-  }
+  useEffect(
+    () => () => {
+      discard.current = true
+      if (recorder.current && recorder.current.state !== 'inactive') recorder.current.stop()
+      cleanup.current?.()
+    },
+    [],
+  )
 
-  useEffect(() => () => cleanup.current?.(), [])
-
-  // Warn before a reload or tab close throws away a take in progress.
+  // Don't let a stray refresh eat a take.
   useEffect(() => {
-    if (state !== 'recording' && state !== 'paused') return
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault()
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [state])
+    if (!active && !failed) return
+    const h = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener('beforeunload', h)
+    return () => window.removeEventListener('beforeunload', h)
+  }, [active, failed])
+
+  async function send(take: Take) {
+    setState('saving')
+    setProgress(0)
+    setError(null)
+    try {
+      const saved = await uploadRecording(take.blob, { title: take.title, durationMs: take.durationMs }, setProgress)
+      setFailed(null)
+      setTitle('')
+      onSaved(saved)
+    } catch (e) {
+      setFailed(take)
+      setError(e instanceof Error ? e.message : 'Upload failed')
+    } finally {
+      setState('idle')
+      setElapsed(0)
+    }
+  }
 
   async function start() {
     setError(null)
+    setFailed(null)
     discard.current = false
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -54,43 +72,19 @@ export function Recorder({ onSaved }: { onSaved: (r: Recording) => void }) {
       const chunks: Blob[] = []
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data)
 
-      // Live input: analyser frames go through the WASM rms_level; the spectrum drives the rosette.
+      // Live input meter: analyser frames go through the WASM rms_level.
       const kit = await kitReady
       const ctx = new AudioContext()
       const analyser = ctx.createAnalyser()
       analyser.fftSize = 1024
-      analyser.smoothingTimeConstant = 0.55
       ctx.createMediaStreamSource(stream).connect(analyser)
       const frame = new Float32Array(analyser.fftSize)
-      const bins = new Uint8Array(analyser.frequencyBinCount)
-      live.current.bins = bins
-      live.current.active = true
-      live.current.paused = false
-
       clock.current = { acc: 0, since: performance.now() }
       let raf = 0
-      let lastTick = -1
-      let clipUntil = 0
-      let clipOn = false
       const tick = () => {
         analyser.getFloatTimeDomainData(frame)
-        analyser.getByteFrequencyData(bins)
-        const now = performance.now()
-        let peak = 0
-        for (let i = 0; i < frame.length; i++) peak = Math.max(peak, Math.abs(frame[i]))
-        live.current.level = Math.min(1, kit.rms_level(frame) * 4)
-        if (peak >= 0.985 && clock.current.since !== null) clipUntil = now + 2500
-        const c = now < clipUntil
-        if (c !== clipOn) {
-          clipOn = c
-          setClipping(c)
-        }
-        const ms = elapsedMs()
-        const slot = Math.floor(ms / 100)
-        if (slot !== lastTick) {
-          lastTick = slot
-          setElapsed(ms)
-        }
+        setLevel(clock.current.since ? Math.min(1, kit.rms_level(frame) * 4) : 0)
+        setElapsed(now())
         raf = requestAnimationFrame(tick)
       }
       tick()
@@ -99,34 +93,30 @@ export function Recorder({ onSaved }: { onSaved: (r: Recording) => void }) {
         cancelAnimationFrame(raf)
         stream.getTracks().forEach((t) => t.stop())
         void ctx.close()
-        live.current.active = false
-        live.current.paused = false
-        live.current.bins = null
-        live.current.level = 0
-        setClipping(false)
+        setLevel(0)
       }
 
-      rec.onstop = async () => {
-        const durationMs = clock.current.acc
+      // The mic vanishing mid-take (unplugged, permission revoked) ends the take cleanly.
+      stream.getAudioTracks()[0]?.addEventListener('ended', () => rec.state !== 'inactive' && rec.stop())
+
+      rec.onstop = () => {
+        const durationMs = now()
         cleanup.current?.()
         cleanup.current = null
+        recorder.current = null
         if (discard.current) {
           setState('idle')
           setElapsed(0)
           return
         }
-        setState('saving')
-        try {
-          const blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' })
-          const saved = await uploadRecording(blob, { title: titleRef.current.trim() || defaultTitle(), durationMs })
-          setTitle('')
-          onSaved(saved)
-        } catch (e) {
-          setError(e instanceof Error ? e.message : 'Upload failed. Check your connection and record again.')
-        } finally {
+        const blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' })
+        if (blob.size === 0) {
+          setError('No audio was captured. Check your microphone and try again.')
           setState('idle')
           setElapsed(0)
+          return
         }
+        void send({ blob, durationMs, title: title.trim() || defaultTitle() })
       }
       recorder.current = rec
       rec.start(250)
@@ -135,126 +125,103 @@ export function Recorder({ onSaved }: { onSaved: (r: Recording) => void }) {
       cleanup.current?.()
       setError(
         e instanceof DOMException && e.name === 'NotAllowedError'
-          ? 'Microphone access was blocked. Allow it in your browser’s site settings and try again.'
-          : e instanceof Error
-            ? e.message
-            : 'Could not start recording',
+          ? 'Microphone access was blocked. Allow it in the browser and try again.'
+          : e instanceof DOMException && e.name === 'NotFoundError'
+            ? 'No microphone was found.'
+            : e instanceof Error
+              ? e.message
+              : 'Could not start recording',
       )
     }
-  }
-
-  function stop() {
-    freeze()
-    recorder.current?.stop()
   }
 
   function togglePause() {
     const rec = recorder.current
     if (!rec) return
-    if (state === 'recording') {
+    if (rec.state === 'recording') {
+      clock.current = { acc: now(), since: 0 }
       rec.pause()
-      freeze()
-      live.current.paused = true
       setState('paused')
-    } else if (state === 'paused') {
-      rec.resume()
+    } else if (rec.state === 'paused') {
       clock.current.since = performance.now()
-      live.current.paused = false
+      rec.resume()
       setState('recording')
     }
   }
 
-  function discardTake() {
-    if (elapsedMs() > 5000 && !confirm('Discard this recording? It hasn’t been saved yet.')) return
-    discard.current = true
-    freeze()
+  function stop() {
     recorder.current?.stop()
   }
 
-  toggleRef.current = () => {
-    if (stateRef.current === 'idle') void start()
-    else if (stateRef.current === 'recording' || stateRef.current === 'paused') stop()
+  function discardTake() {
+    discard.current = true
+    recorder.current?.stop()
   }
 
-  // Spacebar starts and stops, unless focus is on something that already uses it.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' || e.repeat) return
-      const el = e.target as HTMLElement | null
-      if (el?.closest('input,textarea,select,button,a,summary,[contenteditable="true"]')) return
-      e.preventDefault()
-      toggleRef.current()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  const active = state === 'recording' || state === 'paused'
-  const status = {
-    idle: 'Ready when you are.',
-    recording: 'Recording',
-    paused: 'Paused. Your take is on hold.',
-    saving: 'Saving to your library…',
-  }[state]
+  useHotkeys({
+    r: () => (active ? stop() : state === 'idle' && void start()),
+    p: () => active && togglePause(),
+  })
 
   return (
-    <div className="flex flex-col items-center">
-      <Rosette live={live}>
-        <button
-          onClick={() => (state === 'idle' ? void start() : stop())}
-          disabled={state === 'saving'}
-          aria-label={state === 'idle' ? 'Start recording' : 'Stop and save recording'}
-          className="grid h-[32%] w-[32%] place-items-center rounded-full bg-coral text-white transition-transform hover:scale-105 disabled:opacity-60"
-        >
-          <span className="flex flex-col items-center gap-1">
-            {active ? <Icon name="stop" className="h-6 w-6" /> : <Icon name="mic" className="h-6 w-6" />}
-            <span className="font-display text-xl font-medium leading-none">
-              {state === 'idle' ? 'Record' : state === 'saving' ? 'Saving' : 'Stop'}
-            </span>
-          </span>
-        </button>
-      </Rosette>
-
-      <p className="mt-2 font-display text-6xl font-light tabular-nums tracking-tight" aria-label="Elapsed time">
-        {fmtClock(elapsed)}
-      </p>
-      <p className="mt-1 text-sm text-white/75" aria-live="polite">
-        {status}
-      </p>
-
-      <div className="mt-5 flex min-h-10 items-center gap-3">
-        {active && (
-          <>
-            <Button variant="onStage" size="sm" onClick={togglePause}>
-              <Icon name={state === 'paused' ? 'play' : 'pause'} className="h-3.5 w-3.5" />
-              {state === 'paused' ? 'Resume' : 'Pause'}
-            </Button>
-            <Button variant="onStage" size="sm" onClick={discardTake}>
-              Discard
-            </Button>
-          </>
-        )}
+    <Card>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-base font-semibold text-ink">Record</h2>
+        <span aria-live="polite" className="flex items-center gap-1.5 text-xs text-mute">
+          {state === 'recording' && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-red-500 motion-safe:animate-pulse" /> Recording
+            </>
+          )}
+          {state === 'paused' && 'Paused'}
+          {state === 'saving' && (
+            <>
+              <Spinner /> Uploading
+            </>
+          )}
+        </span>
       </div>
-
-      <div className="mt-4 w-full max-w-xs">
+      <div className="flex flex-wrap items-center gap-3">
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           disabled={state !== 'idle'}
-          placeholder="Name this take (optional)"
+          placeholder="Title (optional)"
           maxLength={120}
           aria-label="Recording title"
-          className="w-full border-b border-white/40 bg-transparent px-1 pb-2 text-center text-white placeholder:text-white/55 focus:border-white focus:outline-none disabled:opacity-50"
+          className={`${inputClass} flex-1`}
         />
+        {active ? (
+          <div className="flex gap-2">
+            <Button onClick={togglePause}>{state === 'paused' ? '▶ Resume' : '❚❚ Pause'}</Button>
+            <Button variant="danger" onClick={stop}>■ Stop &amp; save</Button>
+            <Button variant="ghost" onClick={discardTake}>Discard</Button>
+          </div>
+        ) : (
+          <Button variant="primary" onClick={start} disabled={state === 'saving'}>
+            ● Record <Kbd>R</Kbd>
+          </Button>
+        )}
       </div>
-
-      <div className="mt-4 min-h-6 text-center text-sm" aria-live="polite">
-        {clipping && <p className="text-butter">Your input is clipping. Move back from the mic or lower its volume.</p>}
-        {!clipping && state === 'idle' && <p className="text-white/55 max-md:hidden">Press space to start and stop.</p>}
+      <div className="mt-3 flex items-center gap-3">
+        <span className="w-12 font-mono text-sm tabular-nums text-ink" role="timer" aria-label="Elapsed time">{fmtDuration(elapsed)}</span>
+        <Meter value={level} hold label="Input level" />
       </div>
-      <div className="mt-2 w-full max-w-md">
-        <ErrorNote error={error} onStage />
+      {state === 'saving' && (
+        <div className="mt-3">
+          <ProgressBar value={progress} label="Upload progress" />
+        </div>
+      )}
+      <div className="mt-3">
+        <ErrorNote error={error}>
+          {failed && (
+            <>
+              <Button onClick={() => send(failed)} className="!py-0.5">Retry upload</Button>
+              <Button variant="ghost" onClick={() => { setFailed(null); setError(null) }} className="!py-0.5">Discard</Button>
+            </>
+          )}
+        </ErrorNote>
       </div>
-    </div>
+    </Card>
   )
 }
