@@ -15,7 +15,6 @@ export default defineConfig({
   worker: { format: 'es', plugins: () => [wasm(), topLevelAwait()] },
   server: {
     port: 5173,
-    allowedHosts: ['.trycloudflare.com'],
     proxy: {
       '/api': { target: 'http://localhost:4010', changeOrigin: true },
       // multiplayer sessions: websocket
