@@ -13,7 +13,7 @@ compiled to WebAssembly for the DSP.
 | 3 · Multiplayer + merge | Create a session, share `/s/<id>`, everyone joins from their own browser. Mic audio streams over a Phoenix Channel; the host starts/stops a take and the server mixes all tracks into one WAV that is saved to the library. Optional live listening (headphones). |
 | Bonus · Transcribe | One click → transcript + AI title + summary via any OpenAI-compatible API (needs `OPENAI_API_KEY`). Whisper runs as `verbose_json`, so segments keep their timings and any transcribed take downloads as a **`.srt`** subtitle file. |
 
-Deployed at: _add your URL here_
+Deployed at: https://timbre-voice.onrender.com
 
 ## Run it
 
@@ -115,10 +115,21 @@ CI (`.github/workflows/ci.yml`) runs the same checks on every push and PR: API f
 warnings-as-errors + `mix test`, `cargo test` for the DSP crate, and the web WASM build,
 typecheck and production bundle.
 
-## Deploy (Fly.io, single origin)
+## Deploy (Render / Fly.io, single origin)
 
 The `Dockerfile` builds WASM + the Vite app and bakes them into a Phoenix release,
-so there is no CORS and no second host. SQLite lives on a volume.
+so there is no CORS and no second host.
+
+Live demo: **https://timbre-voice.onrender.com**
+
+### Render (Live)
+
+Configured via [`render.yaml`](render.yaml). Builds automatically from the `Dockerfile` as a free web service:
+- Health check: `/readyz`
+- Port: `8080`
+- SQLite database: `/tmp/timbre.db`
+
+### Fly.io
 
 ```bash
 fly launch --no-deploy --copy-config      # choose an app name
